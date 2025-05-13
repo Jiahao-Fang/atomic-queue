@@ -1,6 +1,6 @@
 #pragma once
-// this is a library for a thread safe queue
-// will use concepts of c++20   
+// This is a library for a thread safe queue
+// Will use concepts of C++20   
 
 
 #include <atomic>
@@ -8,23 +8,29 @@
 #include <new>
 #include <cassert>
 #include <cstddef>
+#include <array>
+#include <memory>
+#include <type_traits>
+#include <iostream>
+
 
 
 namespace sl{
     struct EnablePowerOfTwo{};
     struct DisablePowerOfTwo{};
-    // two struct tag, heap and stack buffer
+    // Two struct tags for buffer types
     struct UseHeapBuffer{};
     struct UseStackBuffer{};
     #if defined(__cpp_lib_hardware_interference_size)
     static constexpr size_t cache_line = std::hardware_destructive_interference_size;
     #else
+    // Default cache line size if not defined by the standard
     static constexpr size_t cache_line = 64;
     #endif
     static constexpr bool is_power_of_two(size_t value) noexcept{
         return !(value & (value - 1));
     }
-    // define concepts
+    // Define concepts for type constraints
     template<typename T>
     concept IsEnablePowerOfTwo = std::is_same_v<T, EnablePowerOfTwo>;
     template<typename T>
@@ -52,7 +58,7 @@ namespace sl{
     concept IsValidBufferType = IsHeapBuffer<T> || IsStackBuffer<T>;
     // to do plus1
     template<typename T,IsValidConstraint SizeConstraint,bool Modulo,size_t N=0>
-    // heap buffer
+    // Heap buffer implementation for dynamic size allocation
     class HeapBuffer{
         private:
         T *buffer_;
@@ -75,6 +81,7 @@ namespace sl{
             if constexpr(!Modulo){
                 return buffer_[index];
             }else if constexpr(IsEnablePowerOfTwo<SizeConstraint>){
+                // Fast modulo for power of two sizes using bitwise AND
                 return buffer_[index&buffer_mask_];
             }else if constexpr(N!=0){
                 return buffer_[index%N];
@@ -95,7 +102,8 @@ namespace sl{
         }
     };
     template<typename T,bool Modulo,size_t N=0>
-    // stack buffer. compilor will optimize the index%N to index&N-1
+    // Stack buffer implementation for fixed size allocation
+    // Compiler will optimize the index%N to index&(N-1) for power of two sizes
     class StackBuffer{
         private:
         std::array<T,N> buffer_;
@@ -120,7 +128,7 @@ namespace sl{
     template <bool HasSeq>
     struct SeqField;
     
-    // specializations for HasSeq
+    // Specializations for sequence field based on HasSeq flag
     template<>
     struct SeqField<true>{
         alignas(cache_line) std::atomic<size_t> seq_;
@@ -133,7 +141,7 @@ namespace sl{
     template<bool HasSeq,bool TriviallyDestructible>
     struct IsConstructedField;
 
-    // specializations for IsConstructedField
+    // Specializations for tracking object construction state
     template<bool HasSeq>
     struct IsConstructedField<HasSeq,true>{
         IsConstructedField(bool isconstructed){}
@@ -144,7 +152,7 @@ namespace sl{
         IsConstructedField(bool isconstructed):is_constructed_(isconstructed){}
     };
     template<>
-    // performance test later
+    // Performance optimization to be tested later
     struct IsConstructedField<false,false>{
         alignas(cache_line) bool is_constructed_;
         IsConstructedField(bool isconstructed):is_constructed_(isconstructed){}
@@ -175,12 +183,12 @@ namespace sl{
     template<typename T,bool HasSeq>
     class Cell : public SeqField<HasSeq>,public IsConstructedField<HasSeq,std::is_trivially_destructible_v<T>>{
         private:
-        // test later
+        // Align to cache line or type's alignment requirement, whichever is larger
         alignas(alignof(T) > cache_line ? alignof(T) : cache_line) RawData<T> data_;
         public:
             Cell() : SeqField<HasSeq>(0),IsConstructedField<HasSeq,std::is_trivially_destructible_v<T>>(false){}
             Cell(size_t seq) : SeqField<HasSeq>(seq),IsConstructedField<HasSeq,std::is_trivially_destructible_v<T>>(false){}
-            // make Cell<T>  trivially destructible
+            // Make Cell<T> trivially destructible when T is trivially destructible
             ~Cell() noexcept
             requires std::is_trivially_destructible_v<T> {}
 
@@ -215,11 +223,12 @@ namespace sl{
     template<typename T, size_t N, typename SizeConstraint>
     concept IsValidMPMCQueue = ValidSizeParameter<N,SizeConstraint> && FalseSharingSafe<Cell<T,true>>;
     
+// Atomic compare-and-swap with increment operation
 static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
     return seq.compare_exchange_weak(val,val+1,std::memory_order_relaxed,std::memory_order_relaxed);
 }
 
-// MPMC queue
+// Multiple Producer Multiple Consumer queue implementation
     template<
         typename T,
         size_t N,
@@ -236,11 +245,11 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
             using stack_buffer = StackBuffer<value_type,N,Modulo>;
             using allocator_type = std::allocator<value_type>;
             using buffer_type = std::conditional_t<UseStack,stack_buffer,heap_buffer>;
-            // whether you need alignas buffer_
+            // Cache line aligned buffer to prevent false sharing
             alignas(cache_line) buffer_type buffer_;
             alignas(cache_line) const size_t buffer_size_;
-            alignas(cache_line) std::atomic<size_t> head_;
-            alignas(cache_line) std::atomic<size_t> tail_;
+            alignas(cache_line) std::atomic<size_t> head_; // Consumer index
+            alignas(cache_line) std::atomic<size_t> tail_; // Producer index
         public:
             explicit MPMCQueue(const size_t buffer_size = N, const allocator_type &allocator = allocator_type()) noexcept:
             buffer_(buffer_size,allocator),
@@ -266,15 +275,17 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
         requires std::is_constructible_v<T,Args &&...>{
             size_t pos = tail_.fetch_add(1,std::memory_order_relaxed);
             auto &cell = buffer_[pos];
+            // Wait until the cell is available (sequence matches position)
             while(pos != cell.seq_.load(std::memory_order_acquire));
             cell.construct(std::forward<Args>(args)...);
+            // Mark cell as ready for consumption
             cell.seq_.store(pos + 1, std::memory_order_release);
         }
         void push(const T& value) noexcept(std::is_nothrow_copy_constructible_v<T>)
         requires std::is_copy_constructible_v<T>{
             emplace(value);
         }
-        // use P to construct T
+        // Use P to construct T
         template<typename P>
         void push(P &&value) noexcept(std::is_nothrow_constructible_v<T,P>)
         requires std::is_constructible_v<T,P>{
@@ -289,11 +300,13 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
                 const size_t seq = cell.seq_.load(std::memory_order_acquire);
                 const int64_t diff = seq - pos;
                 if (diff == 0 && cas_add(tail_,pos)){
+                    // Cell is available and we successfully claimed it
                     cell.construct(std::forward<Args>(args)...);
                     cell.seq_.store(pos + 1, std::memory_order_release);
                     return true;
                 }
                 else if (diff < 0){
+                    // Queue is full
                     return false;
                 }
             }
@@ -310,9 +323,11 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
         void pop(T &value) noexcept{
             const size_t pos = head_.fetch_add(1,std::memory_order_relaxed);
             auto &cell = buffer_[pos];
+            // Wait until the cell is ready for consumption
             while(pos + 1 != cell.seq_.load(std::memory_order_acquire));
             value = cell.read();
             cell.destroy();
+            // Mark cell as available for reuse
             cell.seq_.store(pos + buffer_size_, std::memory_order_release);
         }
         [[nodiscard]] bool try_pop(T &value) noexcept{
@@ -322,18 +337,20 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
                 const size_t seq = cell.seq_.load(std::memory_order_acquire);
                 const int64_t diff = seq - pos;
                 if (diff == 1 && cas_add(head_,pos)){
+                    // Cell contains data and we successfully claimed it
                     value = cell.read();
                     cell.destroy();
                     cell.seq_.store(pos + buffer_size_, std::memory_order_release);
                     return true;
                 }
                 else if (diff < 1){
+                    // Queue is empty
                     return false;   
                 }
             }
         }
     };
-    // SPMC queue
+    // Single Producer Multiple Consumer queue implementation
     
     template<
         typename T,
@@ -354,9 +371,10 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
             
             alignas(cache_line) buffer_type buffer_;
             alignas(cache_line) const size_t buffer_size_;
-            alignas(cache_line) size_t write_idx_;
+            alignas(cache_line) size_t write_idx_; // Single producer doesn't need atomic
             
         public:
+            // Reader class for multiple consumers to track their read position
             struct Reader {
                 operator bool() const { return queue_ != nullptr; }
                 
@@ -375,7 +393,7 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
             buffer_(buffer_size,allocator),
             buffer_size_(buffer_size),
             write_idx_(0) {
-                // 初始化所有单元格
+                // Initialize all cells
                 for(size_t i = 0; i < buffer_size_; ++i){
                     new(&buffer_[i]) value_type(i);
                 }
@@ -392,6 +410,7 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
             SPMCQueue(SPMCQueue&& other) = delete;
             SPMCQueue& operator=(SPMCQueue&& other) = delete;
             
+            // Create a new reader starting from the current write position
             Reader getReader() noexcept {
                 Reader reader;
                 reader.queue_ = this;
@@ -404,6 +423,7 @@ static inline bool cas_add(std::atomic<size_t> &seq,size_t val) noexcept{
             requires std::is_constructible_v<T,Args &&...> {
                 auto& cell = buffer_[++write_idx_];
                 cell.construct(std::forward<Args>(args)...);
+                // Make the data visible to readers
                 cell.seq_.store(write_idx_, std::memory_order_release);
             }
             void push(const T& value) noexcept(std::is_nothrow_copy_constructible_v<T>)

@@ -19,10 +19,8 @@ int main() {
     // Producer function (single producer)
     auto producer = [&]() {
         for (int i = 0; i < TOTAL_ITEMS; ++i) {
-            // Try to push until successful
-            while (!queue.try_push(i)) {
-                std::this_thread::yield();
-            }
+            // Push the item (SPMC queue has only push, not try_push)
+            queue.push(i);
         }
     };
     

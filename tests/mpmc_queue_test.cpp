@@ -6,12 +6,12 @@
 #include <string>
 #include <pthread.h>
 #include <sched.h>
-// 测试 MPMCQueue 的基本功能
+// Test basic functionality of MPMCQueue
 TEST(MPMCQueueTest, BasicOperations) {
     sl::MPMCQueue<int, 4> queue;
     int value;
     
-    // 测试基本的 push 和 pop
+    // Test basic push and pop operations
     EXPECT_TRUE(queue.try_push(1));
     EXPECT_TRUE(queue.try_push(2));
     EXPECT_TRUE(queue.try_pop(value));
@@ -20,21 +20,21 @@ TEST(MPMCQueueTest, BasicOperations) {
     EXPECT_EQ(value, 2);
 }
 
-// 测试队列满/空状态
+// Test queue full/empty states
 TEST(MPMCQueueTest, FullEmptyQueue) {
     sl::MPMCQueue<int, 2> queue;
     int value;
     
-    // 测试空队列
+    // Test empty queue
     EXPECT_FALSE(queue.try_pop(value));
     
-    // 填满队列
+    // Fill the queue
     EXPECT_TRUE(queue.try_push(1));
     EXPECT_TRUE(queue.try_push(2));
-    EXPECT_FALSE(queue.try_push(3)); // 队列已满
+    EXPECT_FALSE(queue.try_push(3)); // Queue is full
 }
 
-// 测试多线程操作
+// Test multi-threading operations
 TEST(MPMCQueueTest, MultiThreading) {
     const int QUEUE_SIZE = 1024;
     const int NUM_PRODUCERS = 4;
@@ -44,9 +44,9 @@ TEST(MPMCQueueTest, MultiThreading) {
     sl::MPMCQueue<int, QUEUE_SIZE> queue;
     std::atomic<int> sum(0);
     
-    // 生产者线程
+    // Producer thread
     auto producer = [&](int id) {
-        // 设置线程亲和性，确保一个线程绑定到一个CPU核心
+        // Set thread affinity to ensure one thread per CPU core
         HANDLE thread = GetCurrentThread();
         DWORD_PTR mask = 1ULL << (id % std::thread::hardware_concurrency());
         SetThreadAffinityMask(thread, mask);
@@ -59,9 +59,9 @@ TEST(MPMCQueueTest, MultiThreading) {
         }
     };
     
-    // 消费者线程
+    // Consumer thread
     auto consumer = [&](int id) {
-        // 设置线程亲和性，确保一个线程绑定到一个CPU核心
+        // Set thread affinity to ensure one thread per CPU core
         HANDLE thread = GetCurrentThread();
         DWORD_PTR mask = 1ULL << ((NUM_PRODUCERS + id) % std::thread::hardware_concurrency());
         SetThreadAffinityMask(thread, mask);
@@ -81,25 +81,25 @@ TEST(MPMCQueueTest, MultiThreading) {
     std::vector<std::thread> producers;
     std::vector<std::thread> consumers;
     
-    // 启动生产者
+    // Start producers
     for (int i = 0; i < NUM_PRODUCERS; i++) {
         producers.emplace_back(producer, i);
     }
     
-    // 启动消费者
+    // Start consumers
     for (int i = 0; i < NUM_CONSUMERS; i++) {
         consumers.emplace_back(consumer, i);
     }
-    // 等待所有线程完成
+    // Wait for all threads to complete
     for (auto& p : producers) p.join();
     for (auto& c : consumers) c.join();
     std::cout << "sum: " << sum.load() << std::endl;
     EXPECT_EQ(sum.load(), NUM_PRODUCERS * ITEMS_PER_PRODUCER);
 }
 
-// 测试不同类型
+// Test different types
 TEST(MPMCQueueTest, DifferentTypes) {
-    // 测试简单类型
+    // Test simple types
     {
         sl::MPMCQueue<double, 4> queue;
         double value;
@@ -107,7 +107,7 @@ TEST(MPMCQueueTest, DifferentTypes) {
         EXPECT_TRUE(queue.try_pop(value));
         EXPECT_DOUBLE_EQ(value, 1.5);
     }
-    // 测试复杂类型
+    // Test complex types
     {
         struct TestStruct {
             int x;
@@ -127,7 +127,7 @@ TEST(MPMCQueueTest, DifferentTypes) {
     }
 }   
 
-// 测试 emplace 功能
+// Test emplace functionality
 TEST(MPMCQueueTest, EmplaceTest) {
     struct TestStruct {
         int x;
@@ -144,7 +144,7 @@ TEST(MPMCQueueTest, EmplaceTest) {
     EXPECT_EQ(value.str, "test");
 }
 
-// 测试内存对齐
+// Test memory alignment
 TEST(MPMCQueueTest, MemoryAlignment) {
     static_assert(alignof(sl::MPMCQueue<int, 4>) >= sl::cache_line,
                  "MPMCQueue should be cache line aligned");
